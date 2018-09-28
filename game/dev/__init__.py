@@ -30,14 +30,14 @@ def load_devices(cam_data_path, scale=1000):
 
         camera_class = cameraTypes.get(cam_name, Camera)
         try:
-            camera_class(cam_name, **data_dict, scale=scale)
+            cam = camera_class(cam_name, **data_dict, scale=scale)
         except Exception as e:
             print(e)
-            Camera(cam_name, **data_dict, scale=scale)
+            cam = Camera(cam_name, **data_dict, scale=scale)
 
-        data_dict.update({'connected': Camera.get(cam_name).connected})
+        data_dict.update({'connected': cam.connected})
 
-        print(f'Added camera `{cam_name}` with parameters:')
+        print(f'Added camera `{cam}` with parameters:')
         pprint(data_dict, indent=3)
         print()
 

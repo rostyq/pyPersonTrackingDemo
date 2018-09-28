@@ -9,6 +9,7 @@ from game.dev import defaultWebCameraName
 from game.dev import defaultInfraredCameraName
 from game.dev import defaultKinectColorName
 from game.dev import defaultKinectInfraredName
+from game.dev import load_devices
 
 import ctypes
 import pygame
@@ -42,21 +43,16 @@ def joint_to_np(joint):
     return np.array([x, y, z])
 
 
+def ispressed(key, delay=None):
+    return cv2.waitKey(delay=delay) == key
+
+
 class GameRuntime(object):
 
-    def __init__(self, face_detector_config, landmarks_handler_config, gaze_model_path):
+    def __init__(self, face_detector_config, landmarks_handler_config, gaze_model_path, cam_data_path):
 
-        # init face handling models
-
-        # load gazenet
-        self._gazenet = GazeNet().load_weigths(gaze_model_path)
-        self._eye_image_shape = tuple(self._gazenet.image_shape[::-1])
-
-        # load face detector
-        self._face_detector = FaceDetector(**face_detector_config)
-
-        # load landmarks handler
-        self._landmarks_handler = LandmarksHandler(**landmarks_handler_config)
+        # load cameras
+        load_devices(cam_data_path)
 
         # assign camera objects
         self._kinect_color = Camera.get(defaultKinectColorName)
@@ -70,7 +66,19 @@ class GameRuntime(object):
         self._curr_cam = next(self._cams)
         self._curr_frame = None
 
-        # counter
+        # init face handling models
+
+        # load gazenet
+        self._gazenet = GazeNet().load_weigths(gaze_model_path)
+        self._eye_image_shape = tuple(self._gazenet.image_shape[::-1])
+
+        # load face detector
+        self._face_detector = FaceDetector(**face_detector_config)
+
+        # load landmarks handler
+        self._landmarks_handler = LandmarksHandler(**landmarks_handler_config)
+
+        # frames check queue
         self._last_frames = []
 
         # here we will store skeleton data
@@ -85,8 +93,8 @@ class GameRuntime(object):
     def next_cam(self):
         # self._curr_cam.stop()
         self._curr_cam = next(self._cams)
-        # self._curr_cam.start()
         self._last_frames.clear()
+        # self._curr_cam.start()
 
     def draw_landmarks(self, landmarks, color=None):
         color = color if color is not None else (255, 255, 255)
@@ -127,7 +135,7 @@ class GameRuntime(object):
         origin_face_gaze_line_points = self.calc_gaze_line(face_gaze, origin_nose)
 
         # project face gaze
-        face_gaze_line_points = self._kinect_color.project_vectors(origin_face_gaze_line_points)
+        face_gaze_line_points = self._kinect_color.project_points(origin_face_gaze_line_points)
 
         # check origin points and draw
         if self.check_origin_face_coordinates(face_gaze_line_points, landmarks):
@@ -139,7 +147,8 @@ class GameRuntime(object):
         _, faces = self._face_detector.extract_faces(self._curr_frame)
 
         if faces:
-            self.handle_face(faces[0])
+            landmarks = faces[0]
+            self.handle_face(landmarks)
             self._last_frames.append(True)
         elif not faces:
             self._last_frames.append(False)
@@ -148,31 +157,40 @@ class GameRuntime(object):
         cv2.imshow('window', cv2.resize(self._curr_frame, (1280, 920)))
         self.clear_frame()
 
+    def update_frame(self):
+        self._curr_frame = self._curr_cam.get_frame()
+
+    def check_frames(self):
+        if (len(self._last_frames) == 10) and (not any(self._last_frames)):
+            self.next_cam()
+        if len(self._last_frames) >= 10:
+            self._last_frames.pop(0)
+
+    def tick(self):
+
+        # get frame
+        self.update_frame()
+
+        if self._curr_cam.name == 'WebCamera':
+            self._curr_frame = cv2.resize(self._curr_frame, (0, 0), fx=2, fy=2)
+        try:
+            self.handle_frame()
+            self.show()
+        except RuntimeError:
+            # print(e)
+            pass
+            # self._curr_cam.restart()
+        except AssertionError:
+            # print(e)
+            pass
+            # self._curr_cam.restart()
+        finally:
+            self.check_frames()
+
     def run(self):
         # -------- Main Program Loop -----------
-        while not cv2.waitKey(1) == 27:
-
-            # get frame
-            self._curr_frame = self._curr_cam.get_frame()
-            if self._curr_cam.name == 'WebCamera':
-                self._curr_frame = cv2.resize(self._curr_frame, (0, 0), fx=2, fy=2)
-            try:
-                self.handle_frame()
-                self.show()
-            except RuntimeError as e:
-                print(e)
-                # self._curr_cam.restart()
-                pass
-            except AssertionError as e:
-                print(e)
-                # self._curr_cam.restart()
-                pass
-            finally:
-                if (len(self._last_frames) == 10) and (not any(self._last_frames)):
-                    self.next_cam()
-                if len(self._last_frames) >= 10:
-                    self._last_frames.pop(0)
-            continue
+        while not ispressed(27, delay=1):
+            self.tick()
 
         cv2.destroyAllWindows()
 

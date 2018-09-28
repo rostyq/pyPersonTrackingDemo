@@ -3,6 +3,7 @@ from numpy import hstack
 from numpy import vstack
 from numpy import array
 from numpy.linalg import inv
+from numpy import ndarray
 
 from cv2 import Rodrigues
 from cv2 import projectPoints
@@ -22,7 +23,6 @@ from pykinect2.PyKinectV2 import FrameSourceTypes_Body
 
 from pypylon import factory
 
-# _kinect = PyKinectRuntime(FrameSourceTypes_Color)
 
 def time_measure(func):
     def wrapper(*args, **kwargs):
@@ -37,9 +37,24 @@ def time_measure(func):
 
 class Device:
 
+    _rotation: ndarray
+    _translation: ndarray
+    _rotation_matrix: ndarray
+    _extrinsic_matrix: ndarray
+    _surface_normal: ndarray
+
+    translation_shape = (1, 3)
+    rotation_shape = (1, 3)
+    extrinsic_matrix_shape = (4, 4)
+    rotation_matrix_shape = (3, 3)
+
     default_scale = 1
-    default_translation = zeros((1, 3), dtype='float')
-    default_rotation = zeros((1, 3), dtype='float')
+    default_translation = zeros(translation_shape, dtype='float')
+    default_rotation = zeros(rotation_shape, dtype='float')
+    default_rotation_matrix = zeros(rotation_matrix_shape, dtype='float')
+    default_extrinsic_matrix = zeros(extrinsic_matrix_shape, dtype='float')
+
+    origin_normal = array([[0, 0, 1]], dtype='float')
 
     devs = {}
 
@@ -52,61 +67,84 @@ class Device:
         self.scale = scale if scale else self.default_scale
 
         # extrinsic parameters
-        self._rotation = array(rotation).reshape(1, 3) / self.scale if rotation else self.default_rotation
-        self._translation = array(translation).reshape(1, 3) / self.scale if translation else self.default_translation
+        self.rotation = self.to_ndarray(rotation, self.rotation_shape) / self.scale
+        self.translation = self.to_ndarray(translation, self.translation_shape) / self.scale
 
-        # create and update matrices
-        self.rotation_matrix = None
-        self.extrinsic_matrix = None
-        self.update_rotation_matrix()
-        self.update_extrinsic_matrix()
+    def __repr__(self):
+        return f'{self.name}'
+
+    def __str__(self):
+        return f'{self.name}'
+
+    @staticmethod
+    def to_ndarray(arr, shape):
+        if arr is not None:
+            return array(arr).reshape(*shape)
+        else:
+            return zeros(shape)
 
     @property
-    def translation(self):
-        self._translation = None
+    def rotation_matrix(self):
+        return self._rotation_matrix
 
-    @translation.getter
+    @rotation_matrix.setter
+    def rotation_matrix(self, value):
+        assert isinstance(value, ndarray)
+        self._rotation_matrix = value
+
+    @property
+    def extrinsic_matrix(self):
+        return self._extrinsic_matrix
+
+    @extrinsic_matrix.setter
+    def extrinsic_matrix(self, value):
+        assert isinstance(value, ndarray)
+        self._extrinsic_matrix = value
+
+    @property
     def translation(self):
         return self._translation
 
     @translation.setter
     def translation(self, value):
-        self._translation = array(value).reshape(1, 3)
-        self.update_extrinsic_matrix()
+        assert isinstance(value, ndarray)
+        self._translation = value
+        self.extrinsic_matrix = self.restore_extrinsic_matrix()
+        self.surface_normal = self.calculate_normal()
 
     @property
-    def rotation(self):
-        self._rotation = None
-        self.rotation_matrix = None
-
-    @rotation.getter
     def rotation(self):
         return self._rotation
 
     @rotation.setter
     def rotation(self, value):
-        self._rotation = value.reshape(1, 3)
-        self.update_rotation_matrix()
-        self.update_extrinsic_matrix()
+        assert isinstance(value, ndarray)
+        self._rotation = value
+        self.rotation_matrix = self.create_rotation_matrix(self.rotation)
+        self.surface_normal = self.calculate_normal()
 
     @staticmethod
     def create_rotation_matrix(rotation):
         """(1, 3) -> (3, 3)"""
         return Rodrigues(rotation)[0]
 
-    @staticmethod
-    def restore_extrinsic_matrix(rotation_matrix, translation):
+    def restore_extrinsic_matrix(self):
         """(3, 3), (1, 3), (4,) -> (4, 4)"""
-        return vstack((hstack((rotation_matrix,
-                               translation.T)),
+        return vstack((hstack((self.rotation_matrix,
+                               self.translation.T)),
                        array([0.0, 0.0, 0.0, 1.0])))
 
-    def update_rotation_matrix(self):
-        self.rotation_matrix = self.create_rotation_matrix(self.rotation)
+    def calculate_normal(self):
+            return self.vectors_to_origin(self.origin_normal)
 
-    def update_extrinsic_matrix(self):
-        self.extrinsic_matrix = self.restore_extrinsic_matrix(self.rotation_matrix,
-                                                              self.translation)
+    @property
+    def surface_normal(self):
+        return self._surface_normal
+
+    @surface_normal.setter
+    def surface_normal(self, value):
+        assert isinstance(value, ndarray)
+        self._surface_normal = value
 
     def vectors_to_self(self, vectors, translation=True):
         """
@@ -131,7 +169,7 @@ class Device:
         assert vectors.ndim == 2
         assert vectors.shape[1] == 3
 
-        if translation:
+        if translation and hasattr(self, 'translation'):
             return (self.rotation_matrix @ vectors.T + self.translation.T).T
         else:
             return (self.rotation_matrix @ vectors.T).T
@@ -164,8 +202,14 @@ class Device:
 class Camera(Device):
 
     _connected: bool
-    default_matrix = zeros((3, 3), dtype='float')
-    default_distortion = zeros((4,), dtype='float')
+    _matrix: ndarray
+    _distortion: ndarray
+
+    matrix_shape = (3, 3)
+    distortion_shape = (4,)
+
+    default_matrix = zeros(matrix_shape, dtype='float')
+    default_distortion = zeros(distortion_shape, dtype='float')
 
     def __init__(self, name='camera', matrix=None, distortion=None, **kwargs):
         translation = kwargs.get('translation')
@@ -174,8 +218,8 @@ class Camera(Device):
         super().__init__(name, translation=translation, rotation=rotation, scale=scale)
 
         self.connected = False
-        self.matrix = array(matrix) if matrix else self.default_matrix
-        self.distortion = array(distortion) if distortion else self.default_distortion
+        self.matrix = self.to_ndarray(matrix, self.matrix_shape)
+        self.distortion = self.to_ndarray(distortion, self.distortion_shape)
 
     @property
     def connected(self):
@@ -185,8 +229,26 @@ class Camera(Device):
     def connected(self, flag):
         self._connected = flag
 
-    def project_vectors(self, vectors):
-        return projectPoints(vectors,
+    @property
+    def matrix(self):
+        return self._matrix
+
+    @matrix.setter
+    def matrix(self, value):
+        assert isinstance(value, ndarray)
+        self._matrix = value
+
+    @property
+    def distortion(self):
+        return self._distortion
+
+    @distortion.setter
+    def distortion(self, value):
+        assert isinstance(value, ndarray)
+        self._distortion = value
+
+    def project_points(self, points):
+        return projectPoints(points,
                              -self.rotation,
                              -(inv(self.rotation_matrix) @ self.translation.T),
                              self.matrix,
@@ -214,10 +276,14 @@ class TypeCamera(Camera):
         super().__init__(name=name, **kwargs)
         self.shape = self.read_image_shape()
         self.connected = True
-        self.check()
 
     def check(self):
-        self.get_frame()
+        test_frame = self.get_frame()
+        if test_frame is not None:
+            return True
+        else:
+            self.connected = False
+            return False
 
     def get_frame(self):
         return zeros(self.default_image_shape, dtype='uint8')
@@ -300,18 +366,6 @@ class KinectColor(TypeCamera, PyKinectRuntime):
 
     def release(self):
         pass
-
-
-# class PylonWrapper:
-#
-#     default_index = 0
-#
-#     def __init__(self, index=None):
-#         self.index = index if index is not None else self.default_index
-#         self._runtime = factory.create_device(factory.find_devices()[self.index])
-#
-#     def __call__(self, *args, **kwargs):
-#         return self._runtime
 
 
 class InfraredCamera(TypeCamera):
