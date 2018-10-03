@@ -1,15 +1,15 @@
-from pykinect2 import PyKinectV2
-from pykinect2 import PyKinectRuntime
-
 from game.estimator import *
-from game.estimator import LandmarksHandler
 
+from game.dev import Device
 from game.dev import Camera
-from game.dev import defaultWebCameraName
-from game.dev import defaultInfraredCameraName
-from game.dev import defaultKinectColorName
-from game.dev import defaultKinectInfraredName
+from game.dev import Picture
+from game.dev import WebCameraName
+from game.dev import InfraredCameraName
+from game.dev import KinectColorName
+from game.dev import KinectInfraredName
 from game.dev import load_devices
+
+from game.estimator.utils import detect_pupil
 
 import ctypes
 import pygame
@@ -49,16 +49,18 @@ def ispressed(key, delay=None):
 
 class GameRuntime(object):
 
-    def __init__(self, face_detector_config, landmarks_handler_config, gaze_model_path, cam_data_path):
+    def __init__(self, face_detector_config, landmarks_handler_config, load_config):
 
         # load cameras
-        load_devices(cam_data_path)
+        load_devices(**load_config)
 
         # assign camera objects
-        self._kinect_color = Camera.get(defaultKinectColorName)
-        self._web = Camera.get(defaultWebCameraName)
-        self._ir = Camera.get(defaultInfraredCameraName)
-        self._kinect_ir = Camera.get(defaultKinectInfraredName)
+        self._kinect_color = Camera.get(KinectColorName)
+        self._web = Camera.get(WebCameraName)
+        self._ir = Camera.get(InfraredCameraName)
+        self._kinect_ir = Camera.get(KinectInfraredName)
+
+        self._ir.change_properties(ExposureTime=80000, GainAuto='Off', ExposureAuto='Off')
 
         # assing cameras to handle
         self._cams = cycle([cam for cam in self.all_cams if cam.connected])
@@ -66,17 +68,24 @@ class GameRuntime(object):
         self._curr_cam = next(self._cams)
         self._curr_frame = None
 
+        # get interaction devices
+        self._pictures = [pic for pic in Picture.values()]
+        self._pic_translations = np.array([pic.translation.flatten() for pic in self._pictures])
+
         # init face handling models
 
         # load gazenet
-        self._gazenet = GazeNet().load_weigths(gaze_model_path)
-        self._eye_image_shape = tuple(self._gazenet.image_shape[::-1])
+        # self._gazenet = GazeNet().load_weigths(gaze_model_path)
+        # self._eye_image_shape = tuple(self._gazenet.image_shape[::-1])
 
         # load face detector
         self._face_detector = FaceDetector(**face_detector_config)
 
         # load landmarks handler
         self._landmarks_handler = LandmarksHandler(**landmarks_handler_config)
+
+        # face stack
+        self._face = []
 
         # frames check queue
         self._last_frames = []
@@ -91,20 +100,15 @@ class GameRuntime(object):
         return [self._ir, self._kinect_color, self._web]
 
     def next_cam(self):
-        # self._curr_cam.stop()
+        cv2.destroyWindow('picture')
         self._curr_cam = next(self._cams)
         self._last_frames.clear()
-        # self._curr_cam.start()
+        self._curr_cam.restart()
 
-    def draw_landmarks(self, landmarks, color=None):
+    def draw_landmarks(self, landmarks, color=None, radius=2):
         color = color if color is not None else (255, 255, 255)
         for point in landmarks.astype(int).tolist():
-            cv2.circle(self._curr_frame, tuple(point), 2, color, -1)
-
-    @staticmethod
-    def calc_gaze_line(gaze, origin_point, coeff=5):
-        face_enpoint = origin_point + gaze / coeff
-        return np.stack((origin_point, face_enpoint))
+            cv2.circle(self._curr_frame, tuple(point), radius, color, -1)
 
     def draw_gaze(self, face_gaze_line_points, color=(255, 0, 0)):
         start_pos, end_pos = map(tuple, face_gaze_line_points.astype(int))
@@ -117,29 +121,65 @@ class GameRuntime(object):
     def clear_frame(self):
         self._curr_frame = None
 
+    def find_attention(self, gaze, threshold=0.15):
+
+        ground_truth = self._pic_translations - gaze.line[0]
+        norm_ground_truth = np.linalg.norm(ground_truth, axis=1, keepdims=True)
+        ground_truth = ground_truth / norm_ground_truth
+        attentions = np.linalg.norm((ground_truth - gaze.vector) * np.array([1, 0.7, 1]), axis=1)
+
+        pic_index = attentions.argmin()
+
+        if attentions[pic_index] < threshold:
+            return pic_index
+        else:
+            return None
+
     def handle_face(self, landmarks):
 
-        self.draw_landmarks(landmarks)
-
         # get landmarks in 3d
-        origin_landmarks = self._landmarks_handler.face_model_to_origin(landmarks,
-                                                                        self._curr_cam)
-
+        origin_landmarks = self._landmarks_handler.face_model_to_origin(landmarks, self._curr_cam)
+        landmarks = landmarks.astype(int)
         # calculate face gaze
         face_gaze = self._landmarks_handler.calc_face_gaze(origin_landmarks)
 
         # get origin point of nose
-        origin_nose = origin_landmarks[originNoseTip]
-
-        # calc origin face gaze
-        origin_face_gaze_line_points = self.calc_gaze_line(face_gaze, origin_nose)
+        origin_nose = face_gaze.line[0]
 
         # project face gaze
-        face_gaze_line_points = self._kinect_color.project_points(origin_face_gaze_line_points)
+        face_gaze_line_2d = self._kinect_color.project_points(face_gaze.line)
+
+        # extract eyes
+        eye_pts1, eye_images = self._landmarks_handler.extract_eyes(self._curr_frame, landmarks, pad=0.2)
+        # for i, eye_image in enumerate(eye_images):
+        #     cv2.imshow(f'Eye {i}', cv2.resize(eye_image, (0, 0), fx=5, fy=5))
+
+        # pupil_centers = eye_pts1 + np.array(list((detect_pupil(eye_image, i) for i, eye_image in enumerate(eye_images))))
+
+        # self.draw_landmarks(eye_pts1, color=(0, 0, 255), radius=2)
+        self.draw_landmarks(landmarks)
+        # self.draw_landmarks(pupil_centers, color=(0, 255, 0), radius=2)
 
         # check origin points and draw
-        if self.check_origin_face_coordinates(face_gaze_line_points, landmarks):
-            self.draw_gaze(face_gaze_line_points)
+        if self.check_origin_face_coordinates(face_gaze_line_2d, landmarks):
+
+            attention_pic_index = self.find_attention(face_gaze)
+
+            if attention_pic_index is not None:
+                self._pictures[attention_pic_index].show_pic(winname='picture')
+            else:
+                cv2.destroyWindow('picture')
+
+            self.draw_gaze(face_gaze_line_2d)
+
+        # elif :
+            # cv2.destroyWindow('picture')
+
+    def check_face(self):
+        enough = len(self._face) >= 3
+        if enough:
+            self._face.pop(0)
+        return enough
 
     def handle_frame(self):
         assert self._curr_frame is not None
@@ -147,8 +187,9 @@ class GameRuntime(object):
         _, faces = self._face_detector.extract_faces(self._curr_frame)
 
         if faces:
-            landmarks = faces[0]
-            self.handle_face(landmarks)
+            self._face.append(faces[0])
+        if self.check_face():
+            self.handle_face(np.array(self._face[:]).mean(axis=0))
             self._last_frames.append(True)
         elif not faces:
             self._last_frames.append(False)
@@ -168,22 +209,19 @@ class GameRuntime(object):
 
     def tick(self):
 
-        # get frame
-        self.update_frame()
-
-        if self._curr_cam.name == 'WebCamera':
-            self._curr_frame = cv2.resize(self._curr_frame, (0, 0), fx=2, fy=2)
         try:
+            # get frame
+            self.update_frame()
+            if self._curr_cam.name == 'WebCamera':
+                # print(self._curr_frame.shape)
+                self._curr_frame = cv2.resize(self._curr_frame, (0, 0), fx=2, fy=2)
             self.handle_frame()
             self.show()
         except RuntimeError:
-            # print(e)
+            self._curr_cam.restart()
             pass
-            # self._curr_cam.restart()
         except AssertionError:
-            # print(e)
             pass
-            # self._curr_cam.restart()
         finally:
             self.check_frames()
 
@@ -193,4 +231,3 @@ class GameRuntime(object):
             self.tick()
 
         cv2.destroyAllWindows()
-

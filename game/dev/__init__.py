@@ -1,49 +1,62 @@
+from game.dev.devices import Picture
 from game.dev.devices import Camera
 from game.dev.devices import Device
 from game.dev.devices import KinectColor
 from game.dev.devices import InfraredCamera
 from game.dev.devices import WebCamera
-
+from pathlib import Path
 from json import load
-from pprint import pprint
 
-defaultKinectColorName = 'KinectColor'
-defaultWebCameraName = 'WebCamera'
-defaultInfraredCameraName = 'InfraredCamera'
-defaultKinectInfraredName = 'KinectInfrared'
+KinectColorName = 'KinectColor'
+WebCameraName = 'WebCamera'
+InfraredCameraName = 'InfraredCamera'
+KinectInfraredName = 'KinectInfrared'
 
-cameraTypes = {
-    defaultKinectColorName: KinectColor,
-    defaultInfraredCameraName: InfraredCamera,
-    defaultWebCameraName: WebCamera
+indentification_keys = ['index', 'class_type', 'name']
+
+
+camera_types = {
+    KinectColorName: KinectColor,
+    InfraredCameraName: InfraredCamera,
+    WebCameraName: WebCamera
 }
 
 
-def load_devices(cam_data_path, scale=1000):
+def get_identification(data: dict):
+    return iter(data.pop(key) for key in indentification_keys)
 
-    # load camera parameters
-    with open(cam_data_path, 'r') as f:
-        cam_data = load(f)
 
-    # read json and create objects
-    for cam_name, data_dict in cam_data.items():
+def load_devices(database_file, img_path=None, scale=1, factor=4):
 
-        camera_class = cameraTypes.get(cam_name, Camera)
-        try:
-            cam = camera_class(cam_name, **data_dict, scale=scale)
-        except Exception as e:
-            print(e)
-            cam = Camera(cam_name, **data_dict, scale=scale)
+    # load json file with devices parameters
+    with open(database_file, 'r') as f:
+        devices = load(f)
 
-        data_dict.update({'connected': cam.connected})
-
-        print(f'Added camera `{cam}` with parameters:')
-        pprint(data_dict, indent=3)
-        print()
+    for device in devices:
+        index, class_type, name = get_identification(device)
+        if class_type == 'Camera':
+            camera_types.get(name, Camera)(index=index, name=name, scale=scale, **device)
+        elif class_type == 'Picture':
+            Picture(index=index, name=name, scale=scale, **device).load_pic(img_path, factor=factor)
+        else:
+            Device(index=index, name=name, scale=scale, **device)
 
 
 if __name__ == '__main__':
+    from cv2 import waitKey
+    from config import BIN_PATH
+    from config import DATABASE_FILE
+    from config import IMAGE_DIR
 
-    from config import PATH_TO_CAM_DATA
+    root_dir = Path('../../')
+    img_path = root_dir / BIN_PATH / IMAGE_DIR
+    database_file = root_dir / BIN_PATH / DATABASE_FILE
 
-    load_devices('../../'+PATH_TO_CAM_DATA)
+    print(img_path)
+    load_devices(database_file, img_path)
+
+    for pic in Picture.values():
+        print(pic, type(pic))
+        pic.show_pic()
+        while not waitKey(1) == 27:
+            pass

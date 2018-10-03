@@ -6,11 +6,16 @@ from numpy import cross
 from numpy.linalg import norm
 from numpy import sqrt
 from numpy import stack
+from numpy import diff
+from numpy import abs as np_abs
 
+from cv2 import resize
 from cv2 import Rodrigues
 from cv2 import solvePnP
 from cv2 import SOLVEPNP_ITERATIVE
+from cv2 import INTER_CUBIC
 
+from collections import namedtuple
 
 flip_array = array([-1, -1, 1])
 
@@ -47,6 +52,8 @@ originLeftEyeOuterCorner = 3
 originRightMouthCorner = 4
 originLeftMouthCorner = 5
 
+Gaze = namedtuple('Gaze', 'vector line')
+
 
 class LandmarksHandler:
 
@@ -79,12 +86,21 @@ class LandmarksHandler:
         return camera.vectors_to_origin(vectors.T)
 
     @staticmethod
-    def calc_face_gaze(origin_landmarks):
-        chin_point = origin_landmarks[originChin]
-        cross_vec = cross(chin_point - origin_landmarks[originLeftEyeOuterCorner],
-                          chin_point - origin_landmarks[originRightEyeOuterCorner])
-
+    def calc_face_normal(pt1, pt2, pt3):
+        cross_vec = cross(pt1 - pt2, pt1 - pt3)
         return cross_vec / norm(cross_vec)
+
+    @staticmethod
+    def calc_gaze_line(gaze, origin_point, coeff=0.2):
+        face_enpoint = origin_point + gaze * coeff
+        return stack((origin_point, face_enpoint))
+
+    def calc_face_gaze(self, origin_landmarks, **kwargs):
+        chin_point = origin_landmarks[originChin]
+        eye_corners = origin_landmarks[[originLeftEyeOuterCorner, originRightEyeOuterCorner]]
+        vector = self.calc_face_normal(chin_point, *eye_corners)
+        line = self.calc_gaze_line(gaze=vector, origin_point=origin_landmarks[originNoseTip], **kwargs)
+        return Gaze(vector=vector, line=line)
 
     @staticmethod
     def extract_rectangle(image, rect, togray=False):
@@ -95,14 +111,24 @@ class LandmarksHandler:
         else:
             return to_grayscale(extracted_rectangle)
 
-    def extract_eyes(self, image, landmarks, togray=False, pad=0.4):
+    def extract_eyes(self, image, landmarks, togray=False, pad=0.5):
 
         # eye center method
-        # eye_centers = landmarks[rightEyeCorners + leftEyeCorners].reshape(2, 2, 2).mean(axis=1).astype(int)
-        # eye_roi = stack((eye_centers - self.roi_size, eye_centers + self.roi_size), axis=1)
+        eye_corners = landmarks[rightEyeCorners + leftEyeCorners].reshape(2, 2, 2)
+        eye_width = eye_corners.ptp(axis=1).reshape(2, 2)[:, 0]
+        eye_height = eye_width * 0.6
+
+        new_roi_size = (stack((eye_width, eye_height)) / 2).T
+
+        eye_centers = eye_corners.mean(axis=1)
+        eye_centers[:, 1] -= eye_height * 0.1
+        eye_roi = stack((eye_centers - new_roi_size, eye_centers + new_roi_size), axis=1).astype(int)
 
         # min max method
-        eyes = landmarks[eyeCircles].reshape(2, -1, 2)
-        pad = (eyes[:, :, 1].ptp(axis=-1) * pad).astype(int)
-        eye_roi = stack((eyes.min(axis=1) - pad, eyes.max(axis=1) + pad), axis=1)
-        return (self.extract_rectangle(image, roi, togray) for roi in eye_roi)
+        # eyes = landmarks[eyeCircles].reshape(2, -1, 2)
+        # pad = (eyes[:, :, 1].ptp(axis=-1) * pad).astype(int)
+        # eye_roi = stack((eyes.min(axis=1) - pad, eyes.max(axis=1) + pad), axis=1)
+        return eye_roi[:, 0], (resize(self.extract_rectangle(image,
+                                                             roi,
+                                                             togray),
+                                      tuple(self.roi_size)) for roi in eye_roi)

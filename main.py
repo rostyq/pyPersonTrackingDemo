@@ -1,9 +1,8 @@
 from game import GameRuntime
 
 from config import FACE_DETECTOR
-from config import PATH_TO_CAM_DATA
 from config import LANDMARKS_HANDLER
-from config import PATH_TO_GAZE_MODEL
+from config import LOAD_DATA
 
 from numpy import set_printoptions
 
@@ -14,7 +13,9 @@ __main__ = "Kinect v2 Body Game"
 
 def main():
 
-    game = GameRuntime(FACE_DETECTOR, LANDMARKS_HANDLER, PATH_TO_GAZE_MODEL, PATH_TO_CAM_DATA)
+    game = GameRuntime(FACE_DETECTOR,
+                       LANDMARKS_HANDLER,
+                       LOAD_DATA)
     game.run()
 
 

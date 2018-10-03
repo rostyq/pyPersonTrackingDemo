@@ -5,23 +5,31 @@ from numpy import array
 from numpy.linalg import inv
 from numpy import ndarray
 
+from cv2 import imread
+from cv2 import resize
+from cv2 import imshow
 from cv2 import Rodrigues
 from cv2 import projectPoints
 from cv2 import VideoCapture
-from cv2 import resize
-from cv2 import imshow
+from cv2 import VideoWriter
 from cv2 import waitKey
 from cv2 import cvtColor
 from cv2 import COLOR_GRAY2RGB
-
+from cv2 import COLOR_BGRA2BGR
+from cv2 import VideoWriter_fourcc
 from cv2 import getTickFrequency
 from cv2 import getTickCount
+from cv2 import flip
+from numpy import newaxis
+from pathlib import Path
 
 from pykinect2.PyKinectRuntime import PyKinectRuntime
 from pykinect2.PyKinectV2 import FrameSourceTypes_Color
 from pykinect2.PyKinectV2 import FrameSourceTypes_Body
 
 from pypylon import factory
+from game.estimator import to_grayscale
+fourcc = VideoWriter_fourcc(*'MPEG')
 
 
 def time_measure(func):
@@ -37,38 +45,39 @@ def time_measure(func):
 
 class Device:
 
-    _rotation: ndarray
-    _translation: ndarray
-    _rotation_matrix: ndarray
-    _extrinsic_matrix: ndarray
-    _surface_normal: ndarray
+    _translation_shape: tuple = (1, 3)
+    _rotation_shape: tuple = (1, 3)
+    _extrinsic_matrix_shape: tuple = (4, 4)
+    _rotation_matrix_shape: tuple = (3, 3)
 
-    translation_shape = (1, 3)
-    rotation_shape = (1, 3)
-    extrinsic_matrix_shape = (4, 4)
-    rotation_matrix_shape = (3, 3)
+    _rotation: ndarray = zeros(_rotation_shape, dtype='float')
+    _translation: ndarray = zeros(_translation_shape, dtype='float')
+    _rotation_matrix: ndarray = zeros(_rotation_matrix_shape, dtype='float')
+    _extrinsic_matrix: ndarray = zeros(_extrinsic_matrix_shape, dtype='float')
 
-    default_scale = 1
-    default_translation = zeros(translation_shape, dtype='float')
-    default_rotation = zeros(rotation_shape, dtype='float')
-    default_rotation_matrix = zeros(rotation_matrix_shape, dtype='float')
-    default_extrinsic_matrix = zeros(extrinsic_matrix_shape, dtype='float')
+    _self_normal: ndarray = array([[0, 0, 1]], dtype='float')
+    _origin_normal: ndarray = array([[0, 0, 1]], dtype='float')
 
-    origin_normal = array([[0, 0, 1]], dtype='float')
+    _index: int
+    _scale: (int, float) = 1
 
-    devs = {}
+    _devices: dict = {}
 
-    def __init__(self, name='device', translation=None, rotation=None, scale=None):
+    def __init__(self, index=0, name='device', translation=None, rotation=None, scale=None):
 
+        self.index = index
         self.name = name
 
-        self.devs[self.name] = self
+        self._devices[self.name] = self
 
-        self.scale = scale if scale else self.default_scale
+        if scale is not None:
+            self.scale = scale
 
         # extrinsic parameters
-        self.rotation = self.to_ndarray(rotation, self.rotation_shape) / self.scale
-        self.translation = self.to_ndarray(translation, self.translation_shape) / self.scale
+        if rotation is not None:
+            self.rotation = self.to_ndarray(rotation, self._rotation_shape) / self.scale
+        if translation is not None:
+            self.translation = self.to_ndarray(translation, self._translation_shape) / self.scale
 
     def __repr__(self):
         return f'{self.name}'
@@ -82,6 +91,24 @@ class Device:
             return array(arr).reshape(*shape)
         else:
             return zeros(shape)
+
+    @property
+    def index(self):
+        return self._index
+
+    @index.setter
+    def index(self, value):
+        assert isinstance(value, int)
+        self._index = value
+
+    @property
+    def scale(self):
+        return self._scale
+
+    @scale.setter
+    def scale(self, value):
+        assert isinstance(value, (int, float))
+        self._scale = value
 
     @property
     def rotation_matrix(self):
@@ -110,7 +137,7 @@ class Device:
         assert isinstance(value, ndarray)
         self._translation = value
         self.extrinsic_matrix = self.restore_extrinsic_matrix()
-        self.surface_normal = self.calculate_normal()
+        self.normal = self.calculate_normal()
 
     @property
     def rotation(self):
@@ -121,7 +148,7 @@ class Device:
         assert isinstance(value, ndarray)
         self._rotation = value
         self.rotation_matrix = self.create_rotation_matrix(self.rotation)
-        self.surface_normal = self.calculate_normal()
+        self.normal = self.calculate_normal()
 
     @staticmethod
     def create_rotation_matrix(rotation):
@@ -135,16 +162,16 @@ class Device:
                        array([0.0, 0.0, 0.0, 1.0])))
 
     def calculate_normal(self):
-            return self.vectors_to_origin(self.origin_normal)
+            return self.vectors_to_origin(self._self_normal, translation=False)
 
     @property
-    def surface_normal(self):
-        return self._surface_normal
+    def normal(self):
+        return self._origin_normal
 
-    @surface_normal.setter
-    def surface_normal(self, value):
+    @normal.setter
+    def normal(self, value):
         assert isinstance(value, ndarray)
-        self._surface_normal = value
+        self._origin_normal = value
 
     def vectors_to_self(self, vectors, translation=True):
         """
@@ -176,50 +203,100 @@ class Device:
 
     @classmethod
     def get(cls, name):
-        return cls.devs.get(name)
+        return cls._devices.get(name)
 
     @classmethod
     def pop(cls, name):
-        cls.devs.pop(name)
+        cls._devices.pop(name)
 
     @classmethod
     def clear(cls):
-        cls.devs = {}
+        cls._devices = {}
 
     @classmethod
     def items(cls):
-        return cls.devs.items()
+        return cls._devices.items()
 
     @classmethod
     def keys(cls):
-        return cls.devs.keys()
+        return cls._devices.keys()
 
     @classmethod
     def values(cls):
-        return cls.devs.values()
+        return cls._devices.values()
+
+
+class Picture(Device):
+
+    _picture: ndarray
+    _filename: (str, Path)
+    _devices: dict = {}
+
+    def __init__(self, index, name, filename=None, **kwargs):
+        super().__init__(index=index,
+                         name=name,
+                         translation=kwargs.get('translation'),
+                         rotation=kwargs.get('rotation'),
+                         scale=kwargs.get('scale'))
+        if filename is not None:
+            self.filename = filename
+
+    @property
+    def filename(self):
+        return self._filename
+
+    @filename.setter
+    def filename(self, value):
+        assert isinstance(value, (str, Path))
+        self._filename = value
+
+    @property
+    def picture(self):
+        return self._picture
+
+    @picture.setter
+    def picture(self, value):
+        assert isinstance(value, ndarray)
+        self._picture = value
+
+    def load_pic(self, img_path, flags=-1, factor=None):
+        image = imread(str(img_path / self.filename), flags=flags)
+        if factor is None:
+            self.picture = image
+        else:
+            self.picture = resize(image, (0, 0), fx=1/factor, fy=1/factor)
+        return self
+
+    def show_pic(self, winname=None):
+        winname = winname if winname is not None else self.name
+        try:
+            imshow(winname, self.picture)
+        except AttributeError:
+            return False
 
 
 class Camera(Device):
 
+    _matrix_shape: tuple = (3, 3)
+    _distortion_shape: tuple = (4,)
+
+    _devices: dict = {}
     _connected: bool
-    _matrix: ndarray
-    _distortion: ndarray
+    _matrix: ndarray = zeros(_matrix_shape, dtype='float')
+    _distortion: ndarray = zeros(_distortion_shape, dtype='float')
 
-    matrix_shape = (3, 3)
-    distortion_shape = (4,)
-
-    default_matrix = zeros(matrix_shape, dtype='float')
-    default_distortion = zeros(distortion_shape, dtype='float')
-
-    def __init__(self, name='camera', matrix=None, distortion=None, **kwargs):
-        translation = kwargs.get('translation')
-        rotation = kwargs.get('rotation')
-        scale = kwargs.get('scale')
-        super().__init__(name, translation=translation, rotation=rotation, scale=scale)
+    def __init__(self, index=0, name='camera', matrix=None, distortion=None, **kwargs):
+        super().__init__(index=index,
+                         name=name,
+                         translation=kwargs.get('translation'),
+                         rotation=kwargs.get('rotation'),
+                         scale=kwargs.get('scale'))
 
         self.connected = False
-        self.matrix = self.to_ndarray(matrix, self.matrix_shape)
-        self.distortion = self.to_ndarray(distortion, self.distortion_shape)
+        if matrix is not None:
+            self.matrix = self.to_ndarray(matrix, self._matrix_shape)
+        if distortion is not None:
+            self.distortion = self.to_ndarray(distortion, self._distortion_shape)
 
     @property
     def connected(self):
@@ -268,14 +345,16 @@ class Camera(Device):
 
 class TypeCamera(Camera):
 
-    _shape: tuple
-
-    default_image_shape = (480, 640, 3)
+    _shape: tuple = (480, 640, 3)
 
     def __init__(self, name, **kwargs):
         super().__init__(name=name, **kwargs)
         self.shape = self.read_image_shape()
         self.connected = True
+
+    def create_out(self):
+        self.out = VideoWriter(f'D://test_brs_db//{self.name}.avi', fourcc, 25.0, self.resolution)
+        return self
 
     def check(self):
         test_frame = self.get_frame()
@@ -286,7 +365,7 @@ class TypeCamera(Camera):
             return False
 
     def get_frame(self):
-        return zeros(self.default_image_shape, dtype='uint8')
+        return zeros(self.shape, dtype='uint8')
 
     def read_image_shape(self):
         shape = self.get_frame().shape
@@ -329,24 +408,36 @@ class TypeCamera(Camera):
 
 class WebCamera(TypeCamera, VideoCapture):
 
-    default_device_index = 0
+    _device_address = 0
 
-    def __init__(self, name='WebCamera', index=None, **kwargs):
-        self.index = index if index is not None else self.default_device_index
+    def __init__(self, index=0, name='WebCamera', device_address=None, **kwargs):
+        if device_address is not None:
+            self.device_address = device_address
         self.start()
-        TypeCamera.__init__(self, name=name, **kwargs)
+        TypeCamera.__init__(self, index=index, name=name, **kwargs)
+
+    @property
+    def device_address(self):
+        return self._device_address
+
+    @device_address.setter
+    def device_address(self, value):
+        assert isinstance(value, int)
+        self._device_address = value
 
     def get_frame(self):
         return self.read()[1]
 
     def start(self):
-        VideoCapture.__init__(self, self.index)
+        VideoCapture.__init__(self, self.device_address)
 
     def stop(self):
         self.release()
 
 
 class KinectColor(TypeCamera, PyKinectRuntime):
+
+    _flip_axis = 1
 
     def __init__(self, name='KinectColor', **kwargs):
         PyKinectRuntime.__init__(self, FrameSourceTypes_Color)
@@ -357,7 +448,7 @@ class KinectColor(TypeCamera, PyKinectRuntime):
 
     def get_frame(self):
         if self.has_new_color_frame():
-            return self.get_last_color_frame().reshape(self.shape)
+            return flip(self.get_last_color_frame().reshape(self.shape), self._flip_axis)
         else:
             return None
 
@@ -418,16 +509,24 @@ class InfraredCamera(TypeCamera):
 
 if __name__ == '__main__':
 
-    kinect = KinectColor()
-    ir = InfraredCamera()
+    kinect = KinectColor().create_out()
+    ir = InfraredCamera().create_out()
     ir.change_properties(ExposureTime=60000, GainAuto='Off', ExposureAuto='Continuous')
-    web = WebCamera()
+    web = WebCamera().create_out()
 
     cams = [web, ir, kinect]
-
-    while not waitKey(1) == 27:
+    for i in range(10000):
+    # while not waitKey(1) == 27:
         e1 = getTickCount()
-        frames = [cam.get_frame() for cam in cams]
+        # frames = [cam.get_frame() for cam in cams]
+        for cam in cams:
+            frame = cam.get_frame()
+            if frame is not None:
+                if frame.shape[-1] == 4:
+                    cam.out.write(cvtColor(frame, COLOR_BGRA2BGR))
+                else:
+                    cam.out.write(frame)
+
         e2 = getTickCount()
 
         fps = getTickFrequency() / (e2 - e1)
@@ -436,8 +535,11 @@ if __name__ == '__main__':
         if time < 30:
             continue
 
-        for i, frame in enumerate(frames):
-            if frame is None:
-                break
-            else:
-                imshow(str(i), resize(frame, (0, 0), fx=0.5, fy=0.5))
+        # for i, frame in enumerate(frames):
+        #     if frame is None:
+        #         break
+        #     else:
+        #         imshow(str(i), resize(frame, (0, 0), fx=0.5, fy=0.5))
+
+    for cam in cams:
+        cam.out.release()

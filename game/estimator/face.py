@@ -15,7 +15,7 @@ class FaceDetector:
     def __init__(self, path_to_face_points, path_to_hc_model, factor, scale=1.3, minNeighbors=5):
 
         # load_weigths face detector model
-        self.detector = CascadeClassifier(path_to_hc_model).detectMultiScale
+        self.detector = CascadeClassifier(str(path_to_hc_model)).detectMultiScale
 
         # parameters for face detector model
         self.scale = scale
@@ -23,7 +23,7 @@ class FaceDetector:
         self.factor = factor
 
         # load_weigths face landmarks detector model
-        self.predictor = shape_predictor(path_to_face_points)
+        self.predictor = shape_predictor(str(path_to_face_points))
 
     def upscale(self, coordinates):
         return coordinates * self.factor
