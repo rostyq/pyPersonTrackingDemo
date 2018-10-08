@@ -1,0 +1,8 @@
+{
+  "noseTip": [0.0, 0.0, 0.0],
+  "chin": [0.0, -330.0, -65.0],
+  "leftEyeOuterCorner": [-225.0,  170.0, -135.0],
+  "rightEyeOuterCorner": [225.0,  170.0, -135.0],
+  "leftMouthCorner": [-150.0, -150.0, -125.0],
+  "rightMouthCorner": [150.0, -150.0, -125.0]
+}

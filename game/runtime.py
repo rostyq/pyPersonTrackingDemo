@@ -49,7 +49,7 @@ def ispressed(key, delay=None):
 
 class GameRuntime(object):
 
-    def __init__(self, face_detector_config, landmarks_handler_config, load_config):
+    def __init__(self, face_detector_config: dict, landmarks_handler_config: dict, load_config: dict):
 
         # load cameras
         load_devices(**load_config)
@@ -60,7 +60,7 @@ class GameRuntime(object):
         self._ir = Camera.get(InfraredCameraName)
         self._kinect_ir = Camera.get(KinectInfraredName)
 
-        self._ir.change_properties(ExposureTime=80000, GainAuto='Off', ExposureAuto='Off')
+        self._ir.change_properties(ExposureTime=40000, GainAuto='Continuous', ExposureAuto='Continuous', ReverseX=False)
 
         # assing cameras to handle
         self._cams = cycle([cam for cam in self.all_cams if cam.connected])
@@ -110,23 +110,25 @@ class GameRuntime(object):
         for point in landmarks.astype(int).tolist():
             cv2.circle(self._curr_frame, tuple(point), radius, color, -1)
 
+    def draw_rectangles(self, rectangles, colors=None, thickness=2):
+        colors = colors if colors is not None else SKELETON_COLORS
+        for (x, y, w, h), color in zip(rectangles, colors):
+            cv2.rectangle(self._curr_frame, (x, y), (x+w, y+h), color, thickness=thickness)
+
     def draw_gaze(self, face_gaze_line_points, color=(255, 0, 0)):
         start_pos, end_pos = map(tuple, face_gaze_line_points.astype(int))
         cv2.line(self._curr_frame, start_pos, end_pos, color, 4)
 
-    @staticmethod
-    def check_origin_face_coordinates(face_gaze_line_points, landmarks, tol=15):
-        return np.abs(face_gaze_line_points[0] - landmarks[NoseTip]).sum() < tol
-
     def clear_frame(self):
         self._curr_frame = None
 
-    def find_attention(self, gaze, threshold=0.15):
+    def find_attention(self, gaze, threshold=0.2):
 
         ground_truth = self._pic_translations - gaze.line[0]
         norm_ground_truth = np.linalg.norm(ground_truth, axis=1, keepdims=True)
         ground_truth = ground_truth / norm_ground_truth
-        attentions = np.linalg.norm((ground_truth - gaze.vector) * np.array([1, 0.7, 1]), axis=1)
+        attentions = np.linalg.norm((ground_truth - gaze.vector) * np.array([1, 0.6, 1]), axis=1)
+        # print(attentions)
 
         pic_index = attentions.argmin()
 
@@ -143,25 +145,25 @@ class GameRuntime(object):
         # calculate face gaze
         face_gaze = self._landmarks_handler.calc_face_gaze(origin_landmarks)
 
+        # print(face_gaze.vector)
         # get origin point of nose
         origin_nose = face_gaze.line[0]
-
         # project face gaze
-        face_gaze_line_2d = self._kinect_color.project_points(face_gaze.line)
+        face_gaze_line_2d = self._curr_cam.project_points(face_gaze.line)
 
         # extract eyes
-        eye_pts1, eye_images = self._landmarks_handler.extract_eyes(self._curr_frame, landmarks, pad=0.2)
+        # eye_pts1, eye_images = self._landmarks_handler.extract_eyes(self._curr_frame, landmarks, pad=0.2)
+        # pupil_centers = eye_pts1 + np.array(list((detect_pupil(eye_image, i) for i, eye_image in enumerate(eye_images))))
+
         # for i, eye_image in enumerate(eye_images):
         #     cv2.imshow(f'Eye {i}', cv2.resize(eye_image, (0, 0), fx=5, fy=5))
-
-        # pupil_centers = eye_pts1 + np.array(list((detect_pupil(eye_image, i) for i, eye_image in enumerate(eye_images))))
 
         # self.draw_landmarks(eye_pts1, color=(0, 0, 255), radius=2)
         self.draw_landmarks(landmarks)
         # self.draw_landmarks(pupil_centers, color=(0, 255, 0), radius=2)
 
         # check origin points and draw
-        if self.check_origin_face_coordinates(face_gaze_line_2d, landmarks):
+        if self._landmarks_handler.check_origin_face_coordinates(face_gaze_line_2d, landmarks):
 
             attention_pic_index = self.find_attention(face_gaze)
 
@@ -176,15 +178,16 @@ class GameRuntime(object):
             # cv2.destroyWindow('picture')
 
     def check_face(self):
-        enough = len(self._face) >= 3
-        if enough:
+        if len(self._face) >= 3:
             self._face.pop(0)
-        return enough
+            return True
+        else:
+            return False
 
     def handle_frame(self):
         assert self._curr_frame is not None
 
-        _, faces = self._face_detector.extract_faces(self._curr_frame)
+        rectangles, faces = self._face_detector.extract_faces(self._curr_frame, scale=self._curr_cam.scale)
 
         if faces:
             self._face.append(faces[0])
@@ -193,6 +196,8 @@ class GameRuntime(object):
             self._last_frames.append(True)
         elif not faces:
             self._last_frames.append(False)
+
+        self.draw_rectangles(rectangles)
 
     def show(self):
         cv2.imshow('window', cv2.resize(self._curr_frame, (1280, 920)))
@@ -212,15 +217,13 @@ class GameRuntime(object):
         try:
             # get frame
             self.update_frame()
-            if self._curr_cam.name == 'WebCamera':
-                # print(self._curr_frame.shape)
-                self._curr_frame = cv2.resize(self._curr_frame, (0, 0), fx=2, fy=2)
             self.handle_frame()
             self.show()
         except RuntimeError:
             self._curr_cam.restart()
             pass
-        except AssertionError:
+        except AssertionError as e:
+            # print(e)
             pass
         finally:
             self.check_frames()

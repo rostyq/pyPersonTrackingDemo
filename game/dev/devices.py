@@ -1,9 +1,11 @@
+from numpy import eye
 from numpy import zeros
 from numpy import hstack
 from numpy import vstack
 from numpy import array
 from numpy.linalg import inv
 from numpy import ndarray
+from numpy.linalg.linalg import LinAlgError
 
 from cv2 import imread
 from cv2 import resize
@@ -45,6 +47,8 @@ def time_measure(func):
 
 class Device:
 
+    _origin: bool = False
+
     _translation_shape: tuple = (1, 3)
     _rotation_shape: tuple = (1, 3)
     _extrinsic_matrix_shape: tuple = (4, 4)
@@ -52,7 +56,8 @@ class Device:
 
     _rotation: ndarray = zeros(_rotation_shape, dtype='float')
     _translation: ndarray = zeros(_translation_shape, dtype='float')
-    _rotation_matrix: ndarray = zeros(_rotation_matrix_shape, dtype='float')
+    _rotation_matrix: ndarray = eye(*_rotation_matrix_shape, dtype='float')
+    _inv_rotation_matrix: ndarray = eye(*_rotation_matrix_shape, dtype='float')
     _extrinsic_matrix: ndarray = zeros(_extrinsic_matrix_shape, dtype='float')
 
     _self_normal: ndarray = array([[0, 0, 1]], dtype='float')
@@ -62,6 +67,8 @@ class Device:
     _scale: (int, float) = 1
 
     _devices: dict = {}
+
+    _repr_params = ['index', 'name', 'translation', 'rotation', 'scale']
 
     def __init__(self, index=0, name='device', translation=None, rotation=None, scale=None):
 
@@ -75,22 +82,39 @@ class Device:
 
         # extrinsic parameters
         if rotation is not None:
-            self.rotation = self.to_ndarray(rotation, self._rotation_shape) / self.scale
+            self.rotation = self.to_ndarray(rotation, self._rotation_shape)
         if translation is not None:
-            self.translation = self.to_ndarray(translation, self._translation_shape) / self.scale
+            self.translation = self.to_ndarray(translation, self._translation_shape)
+
+    def get_kwargs(self, string=False):
+        kwargs = {param: getattr(self, param) for param in self._repr_params}
+        if string:
+            return ', '.join('{}={}'.format(*pair) for pair in kwargs.items())
+        else:
+            return kwargs
 
     def __repr__(self):
-        return f'{self.name}'
+        return f"{self.__class__.__name__}({self.get_kwargs(string=True)})"
 
     def __str__(self):
-        return f'{self.name}'
+        return str(self.__dict__)
 
     @staticmethod
-    def to_ndarray(arr, shape):
-        if arr is not None:
-            return array(arr).reshape(*shape)
+    def to_ndarray(arr, shape=None):
+        assert bool(arr)
+        if shape:
+            return array(arr, dtype='float64').reshape(*shape)
         else:
-            return zeros(shape)
+            return array(arr, dtype='float64').flatten()
+
+    @property
+    def origin(self):
+        return self._origin
+
+    @origin.setter
+    def origin(self, value):
+        assert isinstance(value, bool), type(value)
+        self._origin = value
 
     @property
     def index(self):
@@ -118,6 +142,23 @@ class Device:
     def rotation_matrix(self, value):
         assert isinstance(value, ndarray)
         self._rotation_matrix = value
+        self.inv_rotation_matrix = self.create_inv_matrix(self.rotation_matrix)
+
+    @staticmethod
+    def create_inv_matrix(matrix):
+        try:
+            return inv(matrix)
+        except LinAlgError:
+            return eye(matrix.shape[0])
+
+    @property
+    def inv_rotation_matrix(self):
+        return self._inv_rotation_matrix
+
+    @inv_rotation_matrix.setter
+    def inv_rotation_matrix(self, value):
+        assert isinstance(value, ndarray)
+        self._inv_rotation_matrix = value
 
     @property
     def extrinsic_matrix(self):
@@ -138,6 +179,7 @@ class Device:
         self._translation = value
         self.extrinsic_matrix = self.restore_extrinsic_matrix()
         self.normal = self.calculate_normal()
+        self.origin = self.check_origin()
 
     @property
     def rotation(self):
@@ -149,6 +191,10 @@ class Device:
         self._rotation = value
         self.rotation_matrix = self.create_rotation_matrix(self.rotation)
         self.normal = self.calculate_normal()
+        self.origin = self.check_origin()
+
+    def check_origin(self):
+        return (not self.rotation.any()) and (not self.translation.any())
 
     @staticmethod
     def create_rotation_matrix(rotation):
@@ -182,21 +228,25 @@ class Device:
         assert vectors.ndim == 2
         assert vectors.shape[1] == 3
 
-        if translation:
-            return (inv(self.rotation_matrix) @ (vectors - self.translation).T).T
+        if self.origin:
+            return vectors
+        elif translation:
+            return (self.inv_rotation_matrix @ (vectors - self.translation).T).T
         else:
-            return (inv(self.rotation_matrix) @ vectors.T).T
+            return (self.inv_rotation_matrix @ vectors.T).T
 
     def vectors_to_origin(self, vectors, translation=True):
         """
         (?, 3) -> (?, 3)
 
-        (inv((3, 3)) @ ( (?, 3) - (1, 3) ).T).T -> (?, 3)
+        ((3, 3) @ (?, 3) + (1, 3)).T).T -> (?, 3)
         """
         assert vectors.ndim == 2
         assert vectors.shape[1] == 3
 
-        if translation and hasattr(self, 'translation'):
+        if self.origin:
+            return vectors
+        elif translation:
             return (self.rotation_matrix @ vectors.T + self.translation.T).T
         else:
             return (self.rotation_matrix @ vectors.T).T
@@ -285,6 +335,8 @@ class Camera(Device):
     _matrix: ndarray = zeros(_matrix_shape, dtype='float')
     _distortion: ndarray = zeros(_distortion_shape, dtype='float')
 
+    _repr_params = ['index', 'name', 'translation', 'rotation', 'matrix', 'distortion', 'scale']
+
     def __init__(self, index=0, name='camera', matrix=None, distortion=None, **kwargs):
         super().__init__(index=index,
                          name=name,
@@ -296,7 +348,7 @@ class Camera(Device):
         if matrix is not None:
             self.matrix = self.to_ndarray(matrix, self._matrix_shape)
         if distortion is not None:
-            self.distortion = self.to_ndarray(distortion, self._distortion_shape)
+            self.distortion = self.to_ndarray(distortion)
 
     @property
     def connected(self):
@@ -327,9 +379,9 @@ class Camera(Device):
     def project_points(self, points):
         return projectPoints(points,
                              -self.rotation,
-                             -(inv(self.rotation_matrix) @ self.translation.T),
-                             self.matrix,
-                             self.distortion)[0].reshape(-1, 2)
+                             -(self.inv_rotation_matrix @ self.translation.T),
+                             cameraMatrix=self.matrix,
+                             distCoeffs=self.distortion)[0].reshape(-1, 2)
 
     def find_ray_point(self, image_points, origin=True):
         """
@@ -415,6 +467,8 @@ class WebCamera(TypeCamera, VideoCapture):
             self.device_address = device_address
         self.start()
         TypeCamera.__init__(self, index=index, name=name, **kwargs)
+        # self.matrix = self.matrix / 2
+        # self._matrix[2, 2] = 1
 
     @property
     def device_address(self):
@@ -426,7 +480,8 @@ class WebCamera(TypeCamera, VideoCapture):
         self._device_address = value
 
     def get_frame(self):
-        return self.read()[1]
+        return resize(self.read()[1], (1280, 960))
+        # return self.read()[1]
 
     def start(self):
         VideoCapture.__init__(self, self.device_address)

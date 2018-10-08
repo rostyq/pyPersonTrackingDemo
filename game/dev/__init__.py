@@ -7,6 +7,8 @@ from game.dev.devices import WebCamera
 from pathlib import Path
 from json import load
 
+from pprint import pprint
+
 KinectColorName = 'KinectColor'
 WebCameraName = 'WebCamera'
 InfraredCameraName = 'InfraredCamera'
@@ -26,7 +28,7 @@ def get_identification(data: dict):
     return iter(data.pop(key) for key in indentification_keys)
 
 
-def load_devices(database_file, img_path=None, scale=1, factor=4):
+def load_devices(database_file, img_path=None):
 
     # load json file with devices parameters
     with open(database_file, 'r') as f:
@@ -35,11 +37,12 @@ def load_devices(database_file, img_path=None, scale=1, factor=4):
     for device in devices:
         index, class_type, name = get_identification(device)
         if class_type == 'Camera':
-            camera_types.get(name, Camera)(index=index, name=name, scale=scale, **device)
+            dev = camera_types.get(name, Camera)(index=index, name=name, **device)
         elif class_type == 'Picture':
-            Picture(index=index, name=name, scale=scale, **device).load_pic(img_path, factor=factor)
+            dev = Picture(index=index, name=name, **device).load_pic(img_path)
         else:
-            Device(index=index, name=name, scale=scale, **device)
+            dev = Device(index=index, name=name, **device)
+        pprint(dev.__dict__)
 
 
 if __name__ == '__main__':
