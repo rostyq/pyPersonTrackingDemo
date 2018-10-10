@@ -5,9 +5,14 @@ from numpy import cross
 from numpy.linalg import norm
 from numpy import sqrt
 from numpy import stack
+from numpy import append
+
+from cv2 import composeRT
 
 from json import load
 
+from cv2 import getPerspectiveTransform
+from cv2 import warpPerspective
 from cv2 import resize
 from cv2 import Rodrigues
 from cv2 import solvePnP
@@ -24,7 +29,10 @@ class DlibIdx:
     # face model indices
     noseTip = 30
     chin = 8
-
+    
+    leftEyeCircle = list(range(42, 48))
+    rightEyeCircle = list(range(36, 42))
+    
     # eye corners
     rightEyeOuterCorner = 36
     rightEyeInnerCorner = 39
@@ -32,18 +40,30 @@ class DlibIdx:
     leftEyeOuterCorner = 45
     leftEyeInnerCorner = 42
 
-    leftEyeCorners = [leftEyeOuterCorner, leftEyeInnerCorner]
-    rightEyeCorners = [rightEyeInnerCorner, rightEyeOuterCorner]
-    eyeCorners = leftEyeCorners+rightEyeCorners
+    rightUpperEyeLid = [37, 38]
+    rightLowerEyeLid = [40, 41]
 
-    leftEyeCircle = list(range(42, 48))
-    rightEyeCircle = list(range(36, 42))
+    leftUpperEyeLid = [43, 44]
+    leftLowerEyeLid = [46, 47]
 
-    eyeCircles = leftEyeCircle+rightEyeCircle
+    leftEyeCorners = [leftEyeInnerCorner, leftEyeOuterCorner]
+    leftEyeLid = leftUpperEyeLid+leftLowerEyeLid
+
+    rightEyeCorners = [rightEyeOuterCorner, rightEyeInnerCorner]
+    rightEyeLid = rightUpperEyeLid+rightLowerEyeLid
+
+    upperEyeLids = rightUpperEyeLid+leftUpperEyeLid
+    lowerEyeLids = rightLowerEyeLid+leftLowerEyeLid
+
+    eyeCorners = rightEyeCorners+leftEyeCorners
+    eyeCircles = rightEyeCircle+leftEyeCircle
+    eyeLids = rightEyeLid+leftEyeLid
 
     # mouth corners
     rightMouthCorner = 48
     leftMouthCorner = 54
+
+    mouthCorners = rightMouthCorner+leftMouthCorner
 
     landmarks_to_model = [noseTip, chin, rightEyeOuterCorner, leftEyeOuterCorner, rightMouthCorner, leftMouthCorner]
 
@@ -73,50 +93,33 @@ class LandmarksHandler:
         self.chin_nose_distance = chin_nose_distance
         self.face_scale = self.chin_nose_distance / sqrt((self.model_points[self.chin] ** 2).sum())
         self.model_points = self.model_points * self.face_scale
-        self.roi_size = array([30, 18])
+        self.size = array([30, 18])
+        self.points = array([[0, 9],
+                             [30, 9],
+                             [15, 0],
+                             [15, 18]], dtype='float64')
 
     def _extract_model_landmarks(self, landmarks):
         return landmarks[self.generic_face_idx].astype('float64')
 
-    def find_extrinsic(self, landmarks, matrix, distortion):
-        _, rotation_vector, translation_vector = solvePnP(objectPoints=self.model_points,
-                                                          imagePoints=self._extract_model_landmarks(landmarks),
-                                                          cameraMatrix=matrix,
-                                                          distCoeffs=distortion,
-                                                          flags=SOLVEPNP_ITERATIVE)
+    def find_extrinsic(self, landmarks, camera):
+        _, rotation, translation = solvePnP(objectPoints=self.model_points,
+                                            imagePoints=self._extract_model_landmarks(landmarks),
+                                            cameraMatrix=camera.matrix,
+                                            distCoeffs=camera.distortion,
+                                            flags=SOLVEPNP_ITERATIVE)
 
-        return rotation_vector, translation_vector
+        rotation, translation = composeRT(rotation, translation, camera.rotation.T, camera.translation.T)[:2]
+
+        return rotation, translation
 
     def face_model_to_origin(self, landmarks, camera):
-        rotation_vector, translation_vector = self.find_extrinsic(landmarks, camera.matrix, camera.distortion)
+        rotation_vector, translation_vector = self.find_extrinsic(landmarks, camera)
         rotation_matrix = Rodrigues(rotation_vector)[0]
 
         vectors = (rotation_matrix @ self.model_points.T + translation_vector).T
 
-        print(f'before {vectors[0]}')
-        print(f'after {camera.vectors_to_origin(vectors)[0]}')
-
         return camera.vectors_to_origin(vectors)
-
-    def check_origin_face_coordinates(self, face_gaze_line_points, landmarks, tol=15):
-        return abs(face_gaze_line_points[0] - landmarks[DlibIdx.noseTip]).sum() < tol
-
-    @staticmethod
-    def calc_face_normal(pt1, pt2, pt3):
-        cross_vec = cross(pt1 - pt2, pt1 - pt3)
-        return cross_vec / norm(cross_vec)
-
-    @staticmethod
-    def calc_gaze_line(gaze, origin_point, coeff=0.2):
-        face_enpoint = origin_point + gaze * coeff
-        return stack((origin_point, face_enpoint))
-
-    def calc_face_gaze(self, origin_landmarks, **kwargs):
-        chin_point = origin_landmarks[self.chin]
-        eye_corners = origin_landmarks[[self.leftEyeOuterCorner, self.rightEyeOuterCorner]]
-        vector = self.calc_face_normal(chin_point, *eye_corners)
-        line = self.calc_gaze_line(gaze=vector, origin_point=origin_landmarks[self.noseTip], **kwargs)
-        return Gaze(vector=vector, line=line)
 
     @staticmethod
     def extract_rectangle(image, rect, togray=False):
@@ -127,24 +130,67 @@ class LandmarksHandler:
         else:
             return to_grayscale(extracted_rectangle)
 
-    def extract_eyes(self, image, landmarks, togray=False, pad=0.5):
+    @staticmethod
+    def get_eye_points(landmarks, stacked=True):
+        # axes description: eyes, corners, (x, y)
+        corners = landmarks[DlibIdx.eyeCorners].reshape(2, 2, 2)
 
+        # axes description: eyes, (upper, lower), (outer, inner), (x, y)
+        # output axes description: eyes, (upper, lower), (x, y)
+        lids = landmarks[DlibIdx.eyeLids].reshape(2, 2, 2, 2).mean(axis=2)
+
+        # axes description: eyes, (upper, lower, outer, inner), (x, y)
+        if stacked:
+            return stack((corners, lids), axis=1)
+        else:
+            return corners, lids
+
+    @staticmethod
+    def get_eye_roi(landmarks):
         # eye center method
-        eye_corners = landmarks[DlibIdx.rightEyeCorners + DlibIdx.leftEyeCorners].reshape(2, 2, 2)
-        eye_width = eye_corners.ptp(axis=1).reshape(2, 2)[:, 0]
-        eye_height = eye_width * 0.6
+        corners = landmarks[DlibIdx.eyeCorners].reshape(2, 2, 2)
 
-        new_roi_size = (stack((eye_width, eye_height)) / 2).T
+        width = corners.ptp(axis=1).reshape(2, 2)[:, 0]
+        height = width * 0.4
 
-        eye_centers = eye_corners.mean(axis=1)
-        eye_centers[:, 1] -= eye_height * 0.1
-        eye_roi = stack((eye_centers - new_roi_size, eye_centers + new_roi_size), axis=1).astype(int)
+        roi_size = stack((width, height)).T
+
+        new_roi_size = roi_size / 2
+
+        centers = corners.mean(axis=1)
+        centers[:, 1] -= height * 0.1
+        eye_roi = stack((centers - new_roi_size, centers + new_roi_size), axis=1).astype(int)
 
         # min max method
         # eyes = landmarks[eyeCircles].reshape(2, -1, 2)
         # pad = (eyes[:, :, 1].ptp(axis=-1) * pad).astype(int)
         # eye_roi = stack((eyes.min(axis=1) - pad, eyes.max(axis=1) + pad), axis=1)
-        return eye_roi[:, 0], (resize(self.extract_rectangle(image,
-                                                             roi,
-                                                             togray),
-                                      tuple(self.roi_size)) for roi in eye_roi)
+        return eye_roi, centers, roi_size
+
+    def get_eyes(self, image, landmarks):
+        # get points
+        corners, lids = self.get_eye_points(landmarks, stacked=True).astype('float64')
+        eye_roi, centers, roi_size = self.get_eye_roi(corners)
+        print(eye_roi)
+        points = append(corners, lids, axis=1)
+        for i in range(2):
+
+            eye_image = self.extract_rectangle(image, eye_roi[i])
+
+            # get perspective transform matrix
+            print(points[i].reshape(-1, 2))
+            M = getPerspectiveTransform(points[i].reshape(-1, 2), self.points)
+
+            eye_image = warpPerspective(eye_image, M, tuple(self.size))
+            yield eye_image
+
+        # get eye images
+        # eye_roi, centers, roi_size = self.get_eye_roi(points[:, 2:, :])
+        # eye_images = [self.extract_rectangle(image, rectangle) for rectangle in eye_roi]
+
+
+    def extract_eyes(self, image, eye_roi, togray=False):
+        return tuple(resize(self.extract_rectangle(image, roi, togray), tuple(self.size)) for roi in eye_roi)
+
+
+

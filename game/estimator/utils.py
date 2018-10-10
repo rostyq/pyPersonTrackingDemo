@@ -5,7 +5,45 @@ from cv2 import cvtColor
 from cv2 import COLOR_BGR2GRAY
 from cv2 import COLOR_BGRA2GRAY
 
+from time import time
+
+from cv2 import getTickCount
+from cv2 import getTickFrequency
+
 resize_shape = np.array([15, 9])
+
+
+def measure_time(func, *args, **kwargs):
+    e1 = getTickCount()
+    _ = func(*args, **kwargs)
+    return (getTickCount() - e1) / getTickFrequency()
+
+
+def compose_rotation_matrix(yaw, pitch, roll):
+
+    angles = np.array([yaw, pitch, roll])
+    cos, sin = np.cos(angles), np.sin(angles)
+
+    X = np.array([[1,      0,       0],
+                  [0, cos[0], -sin[0]],
+                  [0, sin[0], cos[0]]])
+
+    Y = np.array([[cos[1],  0, sin[1]],
+                  [0,       1,      0],
+                  [-sin[0], 0, cos[0]]])
+
+    Z = np.array([[cos[2], -sin[2], 0],
+                  [sin[2],  cos[2], 0],
+                  [0,            0, 1]])
+
+    return Z @ Y @ X
+
+
+def decompose_rotation_matrix(r):
+    yaw = np.arctan2(r[2, 1], r[2, 2])
+    pitch = np.arctan2(-r[2, 0], np.hypot(r[2, 1], r[2, 2]))
+    roll = np.arctan2(r[1, 0], r[0, 0])
+    return yaw, pitch, roll
 
 
 def calc_norm_disp(x, y):
@@ -119,7 +157,43 @@ def detect_pupil(eye_image, index=0):
 
     # cv2.imshow(f"Function {index}", cv2.resize(func, (0, 0), fx=5, fy=5))
     # cv2.imshow(f"Gradients {index}", cv2.resize(mag, (0, 0), fx=5, fy=5))
-    cv2.circle(eye_image, (max_x, max_y), 1, (0, 0, 255), -1)
-    cv2.imshow(f"eye input {index}", cv2.resize(eye_image, (0, 0), fx=8, fy=8))
-    return max_x, max_y
-    # return (np.array([max_x, max_y]) / resize_shape * input_shape).astype(int)
+    # cv2.circle(eye_image, (max_x, max_y), 1, (0, 0, 255), -1)
+    # cv2.imshow(f"eye input {index}", cv2.resize(eye_image, (0, 0), fx=8, fy=8))
+    # return max_x, max_y
+    # return np.array([max_x, max_y]) / np.array(gray.shape)
+    return max_x / gray.shape[1], max_y / gray.shape[0]
+
+
+def test_rotation_composing(yaw=None, pitch=None, roll=None, tol=1e-6):
+
+    yaw = yaw if yaw else np.pi / 4
+    pitch = pitch if pitch else np.pi / 4
+    roll = roll if roll else np.pi / 4
+
+    angles = np.array([yaw, pitch, roll])
+    angle_names = ['yaw', 'pitch', 'roll']
+
+    def create_string(angles):
+        return '\n\t'.join([f'{angle} = {np.rad2deg(value):.2f} degree' for angle, value in zip(angle_names, angles)])
+
+    rotation_matrix = compose_rotation_matrix(yaw, pitch, roll)
+    returned_angles = decompose_rotation_matrix(rotation_matrix)
+
+    print(f'input angles: \n\t{create_string(angles)}')
+    print(f'rotation matrix: \n {rotation_matrix}')
+    print(f'angles from rotation matrix:\n\t{create_string(returned_angles)}')
+
+    compose_time = measure_time(compose_rotation_matrix, yaw, pitch, roll)
+    decompose_time = measure_time(decompose_rotation_matrix, rotation_matrix)
+
+    print(f'Time:\n\tcompose: {compose_time:.2e} s\n\tdecompose: {decompose_time:.2e} s')
+
+    difference = abs(angles - returned_angles)
+    result = all(difference < tol)
+    print(f"Test passed: {result}")
+    return result
+
+
+if __name__ == '__main__':
+
+    test_rotation_composing()

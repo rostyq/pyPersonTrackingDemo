@@ -34,20 +34,9 @@ from game.estimator import to_grayscale
 fourcc = VideoWriter_fourcc(*'MPEG')
 
 
-def time_measure(func):
-    def wrapper(*args, **kwargs):
-        e1 = getTickCount()
-        res = func(*args, **kwargs)
-        e2 = getTickCount()
-        print(getTickFrequency() / (e2 - e1))
-        return res
-
-    return wrapper
-
-
 class Device:
 
-    _origin: bool = False
+    _world: bool = False
 
     _translation_shape: tuple = (1, 3)
     _rotation_shape: tuple = (1, 3)
@@ -61,24 +50,24 @@ class Device:
     _extrinsic_matrix: ndarray = zeros(_extrinsic_matrix_shape, dtype='float')
 
     _self_normal: ndarray = array([[0, 0, 1]], dtype='float')
-    _origin_normal: ndarray = array([[0, 0, 1]], dtype='float')
+    _world_normal: ndarray = array([[0, 0, 1]], dtype='float')
 
     _index: int
-    _scale: (int, float) = 1
+    # _scale: (int, float) = 1
 
     _devices: dict = {}
 
     _repr_params = ['index', 'name', 'translation', 'rotation', 'scale']
 
-    def __init__(self, index=0, name='device', translation=None, rotation=None, scale=None):
+    def __init__(self, index=0, name='device', translation=None, rotation=None):
 
         self.index = index
         self.name = name
 
         self._devices[self.name] = self
 
-        if scale is not None:
-            self.scale = scale
+        # if scale is not None:
+        #     self.scale = scale
 
         # extrinsic parameters
         if rotation is not None:
@@ -108,13 +97,13 @@ class Device:
             return array(arr, dtype='float64').flatten()
 
     @property
-    def origin(self):
-        return self._origin
+    def world(self):
+        return self._world
 
-    @origin.setter
-    def origin(self, value):
+    @world.setter
+    def world(self, value):
         assert isinstance(value, bool), type(value)
-        self._origin = value
+        self._world = value
 
     @property
     def index(self):
@@ -125,14 +114,14 @@ class Device:
         assert isinstance(value, int)
         self._index = value
 
-    @property
-    def scale(self):
-        return self._scale
-
-    @scale.setter
-    def scale(self, value):
-        assert isinstance(value, (int, float))
-        self._scale = value
+    # @property
+    # def scale(self):
+    #     return self._scale
+    #
+    # @scale.setter
+    # def scale(self, value):
+    #     assert isinstance(value, (int, float))
+    #     self._scale = value
 
     @property
     def rotation_matrix(self):
@@ -176,10 +165,10 @@ class Device:
     @translation.setter
     def translation(self, value):
         assert isinstance(value, ndarray)
-        self._translation = value
+        self._translation = value.reshape(self._translation_shape)
         self.extrinsic_matrix = self.restore_extrinsic_matrix()
         self.normal = self.calculate_normal()
-        self.origin = self.check_origin()
+        self.world = self.check_world()
 
     @property
     def rotation(self):
@@ -188,12 +177,12 @@ class Device:
     @rotation.setter
     def rotation(self, value):
         assert isinstance(value, ndarray)
-        self._rotation = value
+        self._rotation = value.reshape(self._rotation_shape)
         self.rotation_matrix = self.create_rotation_matrix(self.rotation)
         self.normal = self.calculate_normal()
-        self.origin = self.check_origin()
+        self.world = self.check_world()
 
-    def check_origin(self):
+    def check_world(self):
         return (not self.rotation.any()) and (not self.translation.any())
 
     @staticmethod
@@ -208,18 +197,18 @@ class Device:
                        array([0.0, 0.0, 0.0, 1.0])))
 
     def calculate_normal(self):
-            return self.vectors_to_origin(self._self_normal, translation=False)
+            return self.to_world(self._self_normal, translate=False)
 
     @property
     def normal(self):
-        return self._origin_normal
+        return self._world_normal
 
     @normal.setter
     def normal(self, value):
         assert isinstance(value, ndarray)
-        self._origin_normal = value
+        self._world_normal = value
 
-    def vectors_to_self(self, vectors, translation=True):
+    def to_self(self, vectors, translate=True):
         """
         (?, 3) -> (?, 3)
 
@@ -228,14 +217,14 @@ class Device:
         assert vectors.ndim == 2
         assert vectors.shape[1] == 3
 
-        if self.origin:
+        if self.world:
             return vectors
-        elif translation:
+        elif translate:
             return (self.inv_rotation_matrix @ (vectors - self.translation).T).T
         else:
             return (self.inv_rotation_matrix @ vectors.T).T
 
-    def vectors_to_origin(self, vectors, translation=True):
+    def to_world(self, vectors, translate=True):
         """
         (?, 3) -> (?, 3)
 
@@ -244,9 +233,9 @@ class Device:
         assert vectors.ndim == 2
         assert vectors.shape[1] == 3
 
-        if self.origin:
+        if self.world:
             return vectors
-        elif translation:
+        elif translate:
             return (self.rotation_matrix @ vectors.T + self.translation.T).T
         else:
             return (self.rotation_matrix @ vectors.T).T
@@ -286,8 +275,7 @@ class Picture(Device):
         super().__init__(index=index,
                          name=name,
                          translation=kwargs.get('translation'),
-                         rotation=kwargs.get('rotation'),
-                         scale=kwargs.get('scale'))
+                         rotation=kwargs.get('rotation'))
         if filename is not None:
             self.filename = filename
 
@@ -341,8 +329,18 @@ class Camera(Device):
         super().__init__(index=index,
                          name=name,
                          translation=kwargs.get('translation'),
-                         rotation=kwargs.get('rotation'),
-                         scale=kwargs.get('scale'))
+                         rotation=kwargs.get('rotation'))
+
+        scaleFaceFactor = kwargs.get('scaleFaceFactor')
+        minFaceRectangle = kwargs.get('minFaceRectangle')
+        maxFaceRectangle = kwargs.get('maxFaceRectangle')
+        minFaceNeighbors = kwargs.get('minFaceNeighbors')
+        self.face_detect_kwargs = {
+            'scaleFactor': float(scaleFaceFactor) if scaleFaceFactor else None,
+            'minSize': tuple(minFaceRectangle) if minFaceRectangle else None,
+            'maxSize': tuple(maxFaceRectangle) if maxFaceRectangle else None,
+            'minNeighbors': int(minFaceNeighbors) if minFaceNeighbors else None
+        }
 
         self.connected = False
         if matrix is not None:
@@ -383,7 +381,7 @@ class Camera(Device):
                              cameraMatrix=self.matrix,
                              distCoeffs=self.distortion)[0].reshape(-1, 2)
 
-    def find_ray_point(self, image_points, origin=True):
+    def find_ray_point(self, image_points, world=True):
         """
         ((3, 3) @ (?, 3).T).T -> (?, 3)
         """
@@ -392,7 +390,7 @@ class Camera(Device):
         assert image_points.shape[1] == 3
 
         ray_points = (inv(self.matrix) @ image_points.T).T
-        return self.vectors_to_origin(ray_points) if origin else ray_points
+        return self.to_world(ray_points) if world else ray_points
 
 
 class TypeCamera(Camera):
@@ -550,16 +548,14 @@ class InfraredCamera(TypeCamera):
         self.stop()
         self.start()
 
-    # @time_measure
     def get_frame(self):
         try:
+            # return resize(cvtColor(next(self._frames_factory), COLOR_GRAY2RGB), (1296//2, 972//2))
             return cvtColor(next(self._frames_factory), COLOR_GRAY2RGB)
         except RuntimeError:
-            # self.restart()
-            return None
+            self.restart()
         except StopIteration:
             self.restart()
-            return None
 
 
 if __name__ == '__main__':

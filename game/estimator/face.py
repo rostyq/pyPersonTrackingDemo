@@ -23,15 +23,6 @@ class FaceDetector:
         # load_weigths face landmarks detector model
         self.predictor = shape_predictor(str(path_to_face_points))
 
-    # def upscale(self, coordinates):
-    #     return coordinates * self.factor
-    #
-    # def rescale_coordinates(self, coords):
-    #     return (coords * self.factor).astype(int)
-    #
-    # def downscale(self, image, **kwargs):
-    #     return resize(image, tuple(map(lambda ax: int(ax / self.factor), image.shape[::-1])), **kwargs)
-
     @staticmethod
     def shape_to_np(shape, dtype='int'):
         return array([[shape.part(i).x, shape.part(i).y] for i in range(0, 68)], dtype=dtype)
@@ -41,10 +32,8 @@ class FaceDetector:
         return DlibRectangles([DlibRectangle(*cvface[:2], *(cvface[:2] + cvface[2:]))
                                for cvface in cvfaces])
 
-    def find_faces(self, gray_image, scale=None):
-        rectangles = self.detector(gray_image,
-                                   scaleFactor=scale if scale is not None else self.scale,
-                                   minNeighbors=self.minNeighbors)
+    def find_faces(self, gray_image, **kwargs):
+        rectangles = self.detector(image=gray_image, **kwargs)
         return rectangles
 
     def estimate_landmarks(self, gray_image, rectangles):
