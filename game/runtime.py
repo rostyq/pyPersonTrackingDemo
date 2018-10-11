@@ -1,5 +1,5 @@
 from game.estimator import *
-
+from time import sleep
 from game.dev import Device
 from game.dev import Camera
 from game.dev import Picture
@@ -273,17 +273,18 @@ class GameRuntime(object):
 
         if faces:
             self._last_landmarks.append(faces[0])
-        if self.check_face():
-            self.handle_face()
-            self._last_frames.append(True)
+            self.draw_rectangles(rectangles)
+            if self.check_face():
+                self.handle_face()
+                self._last_frames.append(True)
         elif not faces:
             self._last_frames.append(False)
+            sleep(1/15)
 
-        self.draw_rectangles(rectangles)
 
     def show(self):
-        # cv2.imshow('window', cv2.resize(self._curr_frame, (1280, 920)))
-        cv2.imshow('window', self._curr_frame)
+        cv2.imshow('window', cv2.resize(self._curr_frame, (1280, 920)))
+        # cv2.imshow('window', self._curr_frame)
         self.clear_frame()
 
     def update_frame(self):

@@ -478,8 +478,8 @@ class WebCamera(TypeCamera, VideoCapture):
         self._device_address = value
 
     def get_frame(self):
-        return resize(self.read()[1], (1280, 960))
-        # return self.read()[1]
+        # return resize(self.read()[1], (1280, 960))
+        return self.read()[1]
 
     def start(self):
         VideoCapture.__init__(self, self.device_address)
@@ -549,13 +549,13 @@ class InfraredCamera(TypeCamera):
         self.start()
 
     def get_frame(self):
-        try:
+        # try:
             # return resize(cvtColor(next(self._frames_factory), COLOR_GRAY2RGB), (1296//2, 972//2))
-            return cvtColor(next(self._frames_factory), COLOR_GRAY2RGB)
-        except RuntimeError:
-            self.restart()
-        except StopIteration:
-            self.restart()
+        return cvtColor(next(self._frames_factory), COLOR_GRAY2RGB)
+        # except RuntimeError:
+        #     self.restart()
+        # except StopIteration:
+        #     self.restart()
 
 
 if __name__ == '__main__':
