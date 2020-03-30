@@ -3,7 +3,7 @@ asn1crypto==0.24.0
 astor==0.6.2
 backcall==0.1.0
 bashplotlib==0.6.5
-bleach==1.5.0
+bleach==3.1.4
 bson==0.5.6
 certifi==2018.4.16
 cffi==1.11.5
